@@ -1,0 +1,4 @@
+mkdir my-new-project
+cd my-new-project
+mkdir src docs tests
+touch src/.gitkeep docs/.gitkeep tests/.gitkeep
