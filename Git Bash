@@ -1,0 +1,7 @@
+# Create and move into project folder
+mkdir jabi-lake-triathlon && cd jabi-lake-triathlon
+
+# Initialize Git
+git init
+
+git remote add origin https://github.com/Samoolino/jabi-lake-triathlon.git
