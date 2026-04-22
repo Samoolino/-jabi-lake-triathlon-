@@ -61,6 +61,12 @@ function normalizeTask(payload = {}) {
     assignedAgent: payload.assignedAgent || null,
     progress: payload.progress || 0,
     taskScore: payload.taskScore || null,
+    parentTaskId: payload.parentTaskId || null,
+    childTaskIds: Array.isArray(payload.childTaskIds) ? payload.childTaskIds : [],
+    dependencyTaskIds: Array.isArray(payload.dependencyTaskIds) ? payload.dependencyTaskIds : [],
+    validationRequired: Boolean(payload.validationRequired),
+    validationTaskId: payload.validationTaskId || null,
+    taskType: payload.taskType || 'standard',
     createdAt: payload.createdAt || nowIso(),
     updatedAt: payload.updatedAt || nowIso(),
   };
@@ -80,6 +86,10 @@ function recalculateAgentState(agent) {
     agent.state = 'active';
   }
   return agent;
+}
+
+function getTaskById(taskId) {
+  return tasks.find((task) => task.id === taskId);
 }
 
 function getOpenTasksForAgent(agentId) {
@@ -156,13 +166,29 @@ function pickBestAgent(task) {
   return ranked[0] || null;
 }
 
+function dependenciesResolved(task) {
+  if (!task.dependencyTaskIds.length) return true;
+  return task.dependencyTaskIds.every((dependencyId) => {
+    const dependencyTask = getTaskById(dependencyId);
+    return dependencyTask && dependencyTask.state === 'completed';
+  });
+}
+
+function allChildTasksCompleted(parentTask) {
+  if (!parentTask.childTaskIds.length) return true;
+  return parentTask.childTaskIds.every((childTaskId) => {
+    const childTask = getTaskById(childTaskId);
+    return childTask && childTask.state === 'completed';
+  });
+}
+
 function computeTaskScore(task, agent) {
   const acceptanceSpeed = 0.85;
   const executionTimeliness = task.priority >= 0.85 && eventState === 'live-critical' ? 0.7 : 0.9;
   const outputQuality = clampScore(agent.reliability, 0.75);
   const confidenceAccuracy = clampScore(agent.reputationScore, 0.75);
-  const dependencyHandling = 0.8;
-  const collaborationQuality = clampScore(agent.responsiveness, 0.75);
+  const dependencyHandling = task.dependencyTaskIds.length ? 0.9 : 0.8;
+  const collaborationQuality = task.parentTaskId || task.childTaskIds.length ? clampScore(agent.responsiveness + 0.05, 0.8) : clampScore(agent.responsiveness, 0.75);
   const escalationAppropriateness = task.state === 'blocked' ? 0.6 : 0.9;
   const governanceCompliance = clampScore(agent.governanceIntegrity, 0.75);
   const esgSensitivityHandling = task.priority >= 0.85 ? governanceCompliance : 0.85;
@@ -209,6 +235,35 @@ function applyTaskScoreToAgent(agent, taskScore) {
   agent.scoringHistory = agent.scoringHistory.slice(-10);
 }
 
+function updateParentTaskState(task) {
+  if (!task.parentTaskId) return;
+  const parentTask = getTaskById(task.parentTaskId);
+  if (!parentTask) return;
+
+  if (allChildTasksCompleted(parentTask)) {
+    if (parentTask.validationTaskId) {
+      const validationTask = getTaskById(parentTask.validationTaskId);
+      if (validationTask && validationTask.state === 'completed') {
+        parentTask.state = 'completed';
+        parentTask.progress = 1;
+        parentTask.updatedAt = nowIso();
+      } else {
+        parentTask.state = 'waiting';
+        parentTask.progress = 0.9;
+        parentTask.updatedAt = nowIso();
+      }
+    } else {
+      parentTask.state = 'completed';
+      parentTask.progress = 1;
+      parentTask.updatedAt = nowIso();
+    }
+  } else {
+    parentTask.state = 'waiting';
+    parentTask.progress = 0.5;
+    parentTask.updatedAt = nowIso();
+  }
+}
+
 function updateTarkwaMode() {
   const blockedTasks = tasks.filter((task) => task.state === 'blocked').length;
   const activeTasks = tasks.filter((task) => task.state === 'active').length;
@@ -250,6 +305,7 @@ function buildAwareness() {
       tasks: tasks.length,
       openTasks: tasks.filter((task) => !['completed', 'failed'].includes(task.state)).length,
       blockedTasks: tasks.filter((task) => task.state === 'blocked').length,
+      waitingTasks: tasks.filter((task) => task.state === 'waiting').length,
       completedTasks: tasks.filter((task) => task.state === 'completed').length,
     },
     agentStates: {
@@ -403,6 +459,53 @@ app.post('/routing/assign', (req, res) => {
   });
 });
 
+app.post('/routing/split-task', (req, res) => {
+  const parentTask = tasks.find((entry) => entry.id === req.body.parentTaskId);
+  if (!parentTask) {
+    return res.status(404).json({ error: 'Parent task not found' });
+  }
+
+  if (!Array.isArray(req.body.subtasks) || req.body.subtasks.length === 0) {
+    return res.status(400).json({ error: 'subtasks array is required' });
+  }
+
+  const createdSubtasks = req.body.subtasks.map((subtaskPayload, index) => {
+    const childTask = normalizeTask({
+      ...subtaskPayload,
+      id: subtaskPayload.id || `${parentTask.id}.child.${index + 1}`,
+      parentTaskId: parentTask.id,
+      taskType: 'child',
+      validationRequired: false,
+    });
+    tasks.push(childTask);
+    parentTask.childTaskIds.push(childTask.id);
+    return childTask;
+  });
+
+  if (req.body.validationTask) {
+    const validationTask = normalizeTask({
+      ...req.body.validationTask,
+      id: req.body.validationTask.id || `${parentTask.id}.validation`,
+      parentTaskId: parentTask.id,
+      taskType: 'validation',
+      dependencyTaskIds: [...parentTask.childTaskIds],
+      validationRequired: false,
+    });
+    tasks.push(validationTask);
+    parentTask.validationRequired = true;
+    parentTask.validationTaskId = validationTask.id;
+  }
+
+  parentTask.state = 'waiting';
+  parentTask.updatedAt = nowIso();
+
+  return res.status(201).json({
+    parentTask,
+    createdSubtasks,
+    validationTaskId: parentTask.validationTaskId,
+  });
+});
+
 app.post('/state/event-transition', (req, res) => {
   const allowed = ['planning', 'pre-live', 'live-normal', 'live-elevated', 'live-critical', 'recovery', 'post-event'];
   if (!allowed.includes(req.body.eventState)) {
@@ -422,7 +525,32 @@ setInterval(() => {
   syncAgentWorkloads();
 
   tasks.forEach((task) => {
+    if (!['created', 'blocked', 'assigned', 'active', 'waiting'].includes(task.state)) {
+      return;
+    }
+
+    if ((task.taskType === 'child' || task.taskType === 'validation') && !task.assignedAgent && ['created', 'blocked'].includes(task.state)) {
+      const best = pickBestAgent(task);
+      if (best) {
+        task.assignedAgent = best.agent.id;
+        task.state = 'assigned';
+        task.updatedAt = nowIso();
+      }
+    }
+
+    if (task.state === 'waiting' && dependenciesResolved(task)) {
+      if (task.taskType !== 'standard' || !task.childTaskIds.length) {
+        task.state = 'assigned';
+        task.updatedAt = nowIso();
+      }
+    }
+
     if (task.state === 'assigned') {
+      if (!dependenciesResolved(task)) {
+        task.state = 'waiting';
+        task.updatedAt = nowIso();
+        return;
+      }
       task.state = 'active';
       task.progress = 0.5;
       task.updatedAt = nowIso();
@@ -448,6 +576,13 @@ setInterval(() => {
       task.updatedAt = nowIso();
       task.taskScore = computeTaskScore(task, assignedAgent);
       applyTaskScoreToAgent(assignedAgent, task.taskScore);
+      updateParentTaskState(task);
+    }
+  });
+
+  tasks.forEach((task) => {
+    if (task.taskType === 'standard' && task.childTaskIds.length) {
+      updateParentTaskState(task);
     }
   });
 
