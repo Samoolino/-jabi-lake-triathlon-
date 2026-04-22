@@ -1,0 +1,14 @@
+{
+  "name": "jabi-lake-triathlon-ai-workforce",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "node services/core-api/src/server.js",
+    "start": "node services/core-api/src/server.js"
+  }
+}
