@@ -3,75 +3,352 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Jabi Lake Ops Dashboard</title>
+  <title>Jabi Lake Interactive Ops Console</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    header { padding: 20px; background: #111827; border-bottom: 1px solid #334155; }
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #0b1220;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --green: #16a34a;
+      --amber: #f59e0b;
+      --red: #dc2626;
+      --blue: #2563eb;
+      --purple: #7c3aed;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+    header { padding: 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
     h1 { margin: 0; font-size: 24px; }
-    .sub { margin-top: 6px; color: #94a3b8; }
-    .wrap { padding: 20px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-    .card { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 16px; }
+    .sub { margin-top: 6px; color: var(--muted); }
+    .toolbar { display: flex; gap: 8px; align-items: center; padding: 16px 20px; flex-wrap: wrap; }
+    input, select, textarea {
+      padding: 10px; border-radius: 8px; border: 1px solid #475569; background: var(--panel-2); color: var(--text);
+    }
+    input, select { min-width: 180px; }
+    textarea { width: 100%; min-height: 100px; }
+    button {
+      padding: 10px 14px; border: 0; border-radius: 8px; background: var(--blue); color: white; cursor: pointer;
+    }
+    button.secondary { background: var(--purple); }
+    button.danger { background: var(--red); }
+    .wrap { padding: 0 20px 20px; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
     .card h2 { margin: 0 0 12px; font-size: 18px; }
-    pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; color: #cbd5e1; }
-    .controls { padding: 0 20px 20px; }
-    input { padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; width: 320px; }
-    button { padding: 10px 14px; margin-left: 8px; border: 0; border-radius: 8px; background: #2563eb; color: white; cursor: pointer; }
-    .full { grid-column: 1 / -1; }
+    .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .kpi { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+    .kpi .label { color: var(--muted); font-size: 12px; }
+    .kpi .value { font-size: 26px; margin-top: 8px; font-weight: bold; }
+    .status-pill {
+      display: inline-block; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: bold; margin-right: 8px;
+    }
+    .green { background: rgba(22,163,74,0.15); color: #86efac; }
+    .amber { background: rgba(245,158,11,0.15); color: #fcd34d; }
+    .red { background: rgba(220,38,38,0.15); color: #fca5a5; }
+    .blue { background: rgba(37,99,235,0.15); color: #93c5fd; }
+    .list { display: grid; gap: 10px; }
+    .list-item { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    .row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .graph-node { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+    .edges { margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .small { font-size: 12px; color: var(--muted); }
+    .console-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .footer-note { padding: 0 20px 20px; color: var(--muted); font-size: 12px; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Jabi Lake AI Workforce Ops Dashboard</h1>
-    <div class="sub">Awareness, agents, tasks, dependency graph, and Tarkwa runtime visibility</div>
+    <h1>Jabi Lake AI Workforce Interactive Ops Console</h1>
+    <div class="sub">Real-time Tarkwa awareness, task controls, failure simulation, reputation leaderboard, and dependency visibility</div>
   </header>
 
-  <div class="controls">
+  <div class="toolbar">
     <input id="apiBase" value="http://localhost:3000" />
-    <button onclick="loadAll()">Refresh Dashboard</button>
+    <button onclick="loadAll()">Refresh</button>
+    <button class="secondary" onclick="toggleAutoRefresh()" id="autoRefreshBtn">Auto Refresh: ON</button>
+    <select id="eventStateSelect" onchange="setEventState()">
+      <option>planning</option>
+      <option>pre-live</option>
+      <option selected>live-normal</option>
+      <option>live-elevated</option>
+      <option>live-critical</option>
+      <option>recovery</option>
+      <option>post-event</option>
+    </select>
   </div>
 
   <main class="wrap">
-    <section class="card"><h2>Tarkwa Awareness</h2><pre id="awareness">Loading...</pre></section>
-    <section class="card"><h2>Agents</h2><pre id="agents">Loading...</pre></section>
-    <section class="card"><h2>Tasks</h2><pre id="tasks">Loading...</pre></section>
-    <section class="card"><h2>Dependency Graph</h2><pre id="graph">Loading...</pre></section>
-    <section class="card full"><h2>Quick Notes</h2><pre>
-This is the first ops dashboard skeleton.
+    <section class="card span-12">
+      <h2>System Health</h2>
+      <div id="modePills"></div>
+      <div class="kpis" id="kpis"></div>
+    </section>
 
-Planned next upgrades:
-- cards and charts for system health
-- workflow graph visualization
-- live polling and auto refresh
-- task creation and failure simulation controls
-- agent score leaderboard
-    </pre></section>
+    <section class="card span-4">
+      <h2>Create Task</h2>
+      <div class="console-grid">
+        <input id="taskId" placeholder="task id" />
+        <input id="taskTitle" placeholder="task title" />
+        <input id="taskPriority" type="number" min="0" max="1" step="0.05" value="0.8" />
+        <input id="taskCapabilities" placeholder="capabilities comma-separated" />
+      </div>
+      <div style="margin-top:12px;">
+        <button onclick="createTask()">Create Task</button>
+      </div>
+      <div class="small" id="taskCreateStatus"></div>
+    </section>
+
+    <section class="card span-4">
+      <h2>Fail Task Simulation</h2>
+      <input id="failTaskId" placeholder="task id to fail" style="width:100%;" />
+      <div style="margin-top:12px;">
+        <button class="danger" onclick="failTask()">Trigger Failure Cascade</button>
+      </div>
+      <div class="small" id="failTaskStatus"></div>
+    </section>
+
+    <section class="card span-4">
+      <h2>Quick Actions</h2>
+      <div class="list">
+        <div class="list-item">
+          <div class="row"><strong>Refresh awareness</strong><button onclick="loadAll()">Run</button></div>
+        </div>
+        <div class="list-item">
+          <div class="row"><strong>View dependency graph</strong><button onclick="loadGraph()">Run</button></div>
+        </div>
+        <div class="list-item">
+          <div class="row"><strong>Reload agents & scores</strong><button onclick="loadAgentsAndScores()">Run</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card span-4">
+      <h2>Tarkwa Awareness</h2>
+      <pre id="awareness" class="small">Loading...</pre>
+    </section>
+
+    <section class="card span-4">
+      <h2>Agent Score Leaderboard</h2>
+      <div id="leaderboard" class="list"></div>
+    </section>
+
+    <section class="card span-4">
+      <h2>Tasks</h2>
+      <div id="tasks" class="list"></div>
+    </section>
+
+    <section class="card span-12">
+      <h2>Dependency Graph</h2>
+      <div id="graph"></div>
+    </section>
   </main>
 
+  <div class="footer-note">This console is dependency-free and reads directly from the current core API. Next upgrades can add charts, drag-and-drop graph views, and richer controls.</div>
+
   <script>
+    let autoRefreshHandle = null;
+
     function apiBase() {
       return document.getElementById('apiBase').value.replace(/\/$/, '');
     }
 
-    async function fetchJson(path, targetId) {
-      const target = document.getElementById(targetId);
-      try {
-        const response = await fetch(`${apiBase()}${path}`);
-        const data = await response.json();
-        target.textContent = JSON.stringify(data, null, 2);
-      } catch (error) {
-        target.textContent = `Failed to load ${path}: ${error.message}`;
+    function statusClass(value) {
+      if (!value) return 'blue';
+      const v = String(value).toLowerCase();
+      if (v.includes('critical') || v.includes('blocked') || v.includes('red') || v.includes('emergency')) return 'red';
+      if (v.includes('elevated') || v.includes('amber') || v.includes('waiting') || v.includes('direct')) return 'amber';
+      return 'green';
+    }
+
+    async function getJson(path) {
+      const response = await fetch(`${apiBase()}${path}`);
+      if (!response.ok) {
+        throw new Error(`${path} returned ${response.status}`);
       }
+      return response.json();
+    }
+
+    async function postJson(path, body) {
+      const response = await fetch(`${apiBase()}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `${path} returned ${response.status}`);
+      }
+      return data;
+    }
+
+    function renderKPIs(awareness) {
+      const kpis = [
+        { label: 'Agents', value: awareness?.totals?.agents ?? 0 },
+        { label: 'Open Tasks', value: awareness?.totals?.openTasks ?? 0 },
+        { label: 'Blocked Tasks', value: awareness?.totals?.blockedTasks ?? 0 },
+        { label: 'Cascade Blocked', value: awareness?.totals?.cascadeBlockedTasks ?? 0 },
+      ];
+      document.getElementById('kpis').innerHTML = kpis.map(k => `
+        <div class="kpi">
+          <div class="label">${k.label}</div>
+          <div class="value">${k.value}</div>
+        </div>
+      `).join('');
+
+      document.getElementById('modePills').innerHTML = `
+        <span class="status-pill ${statusClass(awareness?.eventState)}">Event: ${awareness?.eventState || 'unknown'}</span>
+        <span class="status-pill ${statusClass(awareness?.tarkwaMode)}">Tarkwa: ${awareness?.tarkwaMode || 'unknown'}</span>
+      `;
+    }
+
+    function renderAwareness(awareness) {
+      document.getElementById('awareness').textContent = JSON.stringify(awareness, null, 2);
+      renderKPIs(awareness);
+    }
+
+    function renderTasks(tasks) {
+      const container = document.getElementById('tasks');
+      container.innerHTML = tasks.map(task => `
+        <div class="list-item">
+          <div class="row">
+            <strong>${task.title}</strong>
+            <span class="status-pill ${statusClass(task.state)}">${task.state}</span>
+          </div>
+          <div class="muted">ID: ${task.id}</div>
+          <div class="muted">Priority: ${task.priority} | Agent: ${task.assignedAgent || 'unassigned'}</div>
+          <div class="muted">Parent: ${task.parentTaskId || '-'} | Validation: ${task.validationTaskId || '-'}</div>
+          <div class="muted">Cascade Blocked By: ${task.cascadeBlockedBy || '-'}</div>
+        </div>
+      `).join('') || '<div class="small">No tasks available.</div>';
+    }
+
+    function renderLeaderboard(agents) {
+      const sorted = [...agents].sort((a, b) => (b.reputationScore || 0) - (a.reputationScore || 0));
+      const container = document.getElementById('leaderboard');
+      container.innerHTML = sorted.map((agent, index) => `
+        <div class="list-item">
+          <div class="row">
+            <strong>#${index + 1} ${agent.name}</strong>
+            <span class="status-pill ${statusClass(agent.health)}">${agent.health}</span>
+          </div>
+          <div class="muted">Reputation: ${(agent.reputationScore ?? 0).toFixed(3)} | Tier: ${agent.reputationTier || '-'}</div>
+          <div class="muted">State: ${agent.state} | Workload: ${agent.workload}</div>
+          <div class="muted">Completed Tasks: ${agent.completedTaskCount || 0}</div>
+        </div>
+      `).join('') || '<div class="small">No agents available.</div>';
+    }
+
+    function renderGraph(graph) {
+      const container = document.getElementById('graph');
+      const nodes = graph?.nodes || [];
+      container.innerHTML = nodes.map(node => `
+        <div class="graph-node">
+          <div class="row">
+            <strong>${node.id}</strong>
+            <span class="status-pill ${statusClass(node.state)}">${node.state}</span>
+          </div>
+          <div class="small">Type: ${node.taskType || 'standard'} | Parent: ${node.parentTaskId || '-'}</div>
+          <div class="edges">Children: ${(node.childTaskIds || []).join(', ') || '-'}</div>
+          <div class="edges">Dependencies: ${(node.dependencyTaskIds || []).join(', ') || '-'}</div>
+          <div class="edges">Validation: ${node.validationTaskId || '-'} | Cascade Blocked By: ${node.cascadeBlockedBy || '-'}</div>
+        </div>
+      `).join('') || '<div class="small">No graph nodes available.</div>';
+    }
+
+    async function loadAwareness() {
+      const awareness = await getJson('/tarkwa/awareness');
+      renderAwareness(awareness);
+      return awareness;
+    }
+
+    async function loadTasks() {
+      const tasks = await getJson('/tasks');
+      renderTasks(tasks);
+      return tasks;
+    }
+
+    async function loadAgentsAndScores() {
+      const agents = await getJson('/agents');
+      renderLeaderboard(agents);
+      return agents;
+    }
+
+    async function loadGraph() {
+      const graph = await getJson('/routing/dependency-graph');
+      renderGraph(graph);
+      return graph;
     }
 
     async function loadAll() {
-      await Promise.all([
-        fetchJson('/tarkwa/awareness', 'awareness'),
-        fetchJson('/agents', 'agents'),
-        fetchJson('/tasks', 'tasks'),
-        fetchJson('/routing/dependency-graph', 'graph')
-      ]);
+      try {
+        await Promise.all([loadAwareness(), loadTasks(), loadAgentsAndScores(), loadGraph()]);
+      } catch (error) {
+        document.getElementById('awareness').textContent = `Console load failed: ${error.message}`;
+      }
     }
 
+    async function createTask() {
+      const status = document.getElementById('taskCreateStatus');
+      try {
+        const id = document.getElementById('taskId').value.trim();
+        const title = document.getElementById('taskTitle').value.trim();
+        const priority = Number(document.getElementById('taskPriority').value || 0.8);
+        const requiredCapabilities = document.getElementById('taskCapabilities').value
+          .split(',')
+          .map(v => v.trim())
+          .filter(Boolean);
+
+        await postJson('/tasks', { id, title, priority, requiredCapabilities });
+        status.textContent = `Created task ${id}`;
+        await loadAll();
+      } catch (error) {
+        status.textContent = `Create task failed: ${error.message}`;
+      }
+    }
+
+    async function failTask() {
+      const status = document.getElementById('failTaskStatus');
+      try {
+        const taskId = document.getElementById('failTaskId').value.trim();
+        await postJson('/routing/mark-failed', { taskId });
+        status.textContent = `Triggered failure cascade for ${taskId}`;
+        await loadAll();
+      } catch (error) {
+        status.textContent = `Failure simulation failed: ${error.message}`;
+      }
+    }
+
+    async function setEventState() {
+      try {
+        const eventState = document.getElementById('eventStateSelect').value;
+        await postJson('/state/event-transition', { eventState });
+        await loadAll();
+      } catch (error) {
+        document.getElementById('awareness').textContent = `Event state update failed: ${error.message}`;
+      }
+    }
+
+    function toggleAutoRefresh() {
+      const button = document.getElementById('autoRefreshBtn');
+      if (autoRefreshHandle) {
+        clearInterval(autoRefreshHandle);
+        autoRefreshHandle = null;
+        button.textContent = 'Auto Refresh: OFF';
+        return;
+      }
+      autoRefreshHandle = setInterval(loadAll, 4000);
+      button.textContent = 'Auto Refresh: ON';
+    }
+
+    autoRefreshHandle = setInterval(loadAll, 4000);
     loadAll();
   </script>
 </body>
