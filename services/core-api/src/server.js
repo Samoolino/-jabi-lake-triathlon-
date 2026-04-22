@@ -42,6 +42,8 @@ function normalizeAgent(payload = {}) {
     governanceIntegrity: clampScore(payload.governanceIntegrity, reputationScore),
     reputationScore,
     reputationTier: payload.reputationTier || deriveReputationTier(reputationScore),
+    scoringHistory: Array.isArray(payload.scoringHistory) ? payload.scoringHistory : [],
+    completedTaskCount: Number.isFinite(payload.completedTaskCount) ? payload.completedTaskCount : 0,
     lastHeartbeatAt: payload.lastHeartbeatAt || nowIso(),
     createdAt: payload.createdAt || nowIso(),
   };
@@ -58,6 +60,7 @@ function normalizeTask(payload = {}) {
     state: payload.state || 'created',
     assignedAgent: payload.assignedAgent || null,
     progress: payload.progress || 0,
+    taskScore: payload.taskScore || null,
     createdAt: payload.createdAt || nowIso(),
     updatedAt: payload.updatedAt || nowIso(),
   };
@@ -153,6 +156,59 @@ function pickBestAgent(task) {
   return ranked[0] || null;
 }
 
+function computeTaskScore(task, agent) {
+  const acceptanceSpeed = 0.85;
+  const executionTimeliness = task.priority >= 0.85 && eventState === 'live-critical' ? 0.7 : 0.9;
+  const outputQuality = clampScore(agent.reliability, 0.75);
+  const confidenceAccuracy = clampScore(agent.reputationScore, 0.75);
+  const dependencyHandling = 0.8;
+  const collaborationQuality = clampScore(agent.responsiveness, 0.75);
+  const escalationAppropriateness = task.state === 'blocked' ? 0.6 : 0.9;
+  const governanceCompliance = clampScore(agent.governanceIntegrity, 0.75);
+  const esgSensitivityHandling = task.priority >= 0.85 ? governanceCompliance : 0.85;
+
+  const rawTaskScore =
+    acceptanceSpeed * 0.10 +
+    executionTimeliness * 0.15 +
+    outputQuality * 0.20 +
+    confidenceAccuracy * 0.10 +
+    dependencyHandling * 0.10 +
+    collaborationQuality * 0.10 +
+    escalationAppropriateness * 0.10 +
+    governanceCompliance * 0.10 +
+    esgSensitivityHandling * 0.05;
+
+  const difficultyMultiplier = task.priority >= 0.85 ? 1.15 : task.priority >= 0.6 ? 1.05 : 1;
+  const weightedTaskScore = clampScore(rawTaskScore * difficultyMultiplier, rawTaskScore);
+
+  return {
+    rawTaskScore: Number(rawTaskScore.toFixed(3)),
+    weightedTaskScore: Number(weightedTaskScore.toFixed(3)),
+    difficultyMultiplier,
+    scoredAt: nowIso(),
+  };
+}
+
+function applyTaskScoreToAgent(agent, taskScore) {
+  const nextReputation = clampScore(agent.reputationScore * 0.8 + taskScore.weightedTaskScore * 0.2, agent.reputationScore);
+  const nextReliability = clampScore(agent.reliability * 0.85 + taskScore.rawTaskScore * 0.15, agent.reliability);
+  const nextResponsiveness = clampScore(agent.responsiveness * 0.85 + taskScore.rawTaskScore * 0.15, agent.responsiveness);
+  const nextGovernance = clampScore(agent.governanceIntegrity * 0.85 + taskScore.weightedTaskScore * 0.15, agent.governanceIntegrity);
+
+  agent.reputationScore = Number(nextReputation.toFixed(3));
+  agent.reliability = Number(nextReliability.toFixed(3));
+  agent.responsiveness = Number(nextResponsiveness.toFixed(3));
+  agent.governanceIntegrity = Number(nextGovernance.toFixed(3));
+  agent.reputationTier = deriveReputationTier(agent.reputationScore);
+  agent.completedTaskCount += 1;
+  agent.scoringHistory.push({
+    weightedTaskScore: taskScore.weightedTaskScore,
+    rawTaskScore: taskScore.rawTaskScore,
+    scoredAt: taskScore.scoredAt,
+  });
+  agent.scoringHistory = agent.scoringHistory.slice(-10);
+}
+
 function updateTarkwaMode() {
   const blockedTasks = tasks.filter((task) => task.state === 'blocked').length;
   const activeTasks = tasks.filter((task) => task.state === 'active').length;
@@ -183,6 +239,7 @@ function buildAwareness() {
       reputationTier: agent.reputationTier,
       state: agent.state,
       health: agent.health,
+      completedTaskCount: agent.completedTaskCount,
     }));
 
   return {
@@ -288,6 +345,8 @@ app.get('/scores/agents/:agentId', (req, res) => {
     reliability: agent.reliability,
     responsiveness: agent.responsiveness,
     governanceIntegrity: agent.governanceIntegrity,
+    completedTaskCount: agent.completedTaskCount,
+    recentScores: agent.scoringHistory,
     routingWeight: Number(computeReputationComponent(agent).toFixed(3)),
   });
 });
@@ -387,6 +446,8 @@ setInterval(() => {
       task.state = 'completed';
       task.progress = 1;
       task.updatedAt = nowIso();
+      task.taskScore = computeTaskScore(task, assignedAgent);
+      applyTaskScoreToAgent(assignedAgent, task.taskScore);
     }
   });
 
