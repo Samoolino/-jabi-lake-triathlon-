@@ -14,7 +14,21 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function clampScore(value, fallback = 0.7) {
+  const numeric = typeof value === 'number' ? value : fallback;
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function deriveReputationTier(score) {
+  if (score >= 0.9) return 'A';
+  if (score >= 0.75) return 'B';
+  if (score >= 0.6) return 'C';
+  if (score >= 0.4) return 'D';
+  return 'E';
+}
+
 function normalizeAgent(payload = {}) {
+  const reputationScore = clampScore(payload.reputationScore, 0.7);
   return {
     id: payload.id,
     name: payload.name,
@@ -23,6 +37,11 @@ function normalizeAgent(payload = {}) {
     state: payload.state || 'idle',
     workload: Number.isFinite(payload.workload) ? payload.workload : 0,
     health: payload.health || 'green',
+    reliability: clampScore(payload.reliability, reputationScore),
+    responsiveness: clampScore(payload.responsiveness, reputationScore),
+    governanceIntegrity: clampScore(payload.governanceIntegrity, reputationScore),
+    reputationScore,
+    reputationTier: payload.reputationTier || deriveReputationTier(reputationScore),
     lastHeartbeatAt: payload.lastHeartbeatAt || nowIso(),
     createdAt: payload.createdAt || nowIso(),
   };
@@ -69,6 +88,7 @@ function getOpenTasksForAgent(agentId) {
 function syncAgentWorkloads() {
   agents = agents.map((agent) => {
     agent.workload = getOpenTasksForAgent(agent.id).length;
+    agent.reputationTier = deriveReputationTier(agent.reputationScore);
     return recalculateAgentState(agent);
   });
 }
@@ -87,23 +107,46 @@ function computeWorkloadReadiness(agent) {
   return 0.2;
 }
 
+function computeReputationComponent(agent) {
+  return (
+    agent.reputationScore * 0.5 +
+    agent.reliability * 0.2 +
+    agent.responsiveness * 0.15 +
+    agent.governanceIntegrity * 0.15
+  );
+}
+
 function computeAgentFit(agent, task) {
   const capabilityFit = computeCapabilityFit(agent, task);
   const workloadReadiness = computeWorkloadReadiness(agent);
   const stateReadiness = agent.state === 'blocked' ? 0 : agent.state === 'idle' ? 1 : 0.7;
   const healthScore = agent.health === 'green' ? 1 : agent.health === 'amber' ? 0.6 : 0;
+  const reputationComponent = computeReputationComponent(agent);
 
   return (
-    capabilityFit * 0.45 +
-    workloadReadiness * 0.25 +
-    stateReadiness * 0.15 +
-    healthScore * 0.15
+    capabilityFit * 0.35 +
+    workloadReadiness * 0.20 +
+    stateReadiness * 0.10 +
+    healthScore * 0.10 +
+    reputationComponent * 0.25
   );
 }
 
+function getEligibleAgents(task) {
+  return agents.filter((agent) => {
+    if (agent.health === 'red') return false;
+    if (task.priority >= 0.85 && agent.reputationScore < 0.75) return false;
+    return true;
+  });
+}
+
 function pickBestAgent(task) {
-  const ranked = agents
-    .map((agent) => ({ agent, fit: computeAgentFit(agent, task) }))
+  const ranked = getEligibleAgents(task)
+    .map((agent) => ({
+      agent,
+      fit: computeAgentFit(agent, task),
+      reputationComponent: computeReputationComponent(agent),
+    }))
     .filter((entry) => entry.fit > 0)
     .sort((a, b) => b.fit - a.fit);
 
@@ -131,6 +174,17 @@ function buildAwareness() {
   syncAgentWorkloads();
   updateTarkwaMode();
 
+  const rankedAgents = [...agents]
+    .sort((a, b) => b.reputationScore - a.reputationScore)
+    .map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      reputationScore: agent.reputationScore,
+      reputationTier: agent.reputationTier,
+      state: agent.state,
+      health: agent.health,
+    }));
+
   return {
     eventState,
     tarkwaMode,
@@ -155,6 +209,10 @@ function buildAwareness() {
       critical: tasks.filter((task) => task.priority >= 0.85 && task.state !== 'completed').length,
       elevated: tasks.filter((task) => task.priority >= 0.6 && task.priority < 0.85 && task.state !== 'completed').length,
       normal: tasks.filter((task) => task.priority < 0.6 && task.state !== 'completed').length,
+    },
+    routingPreference: {
+      trustedAgents: rankedAgents.slice(0, 3),
+      degradedAgents: rankedAgents.filter((agent) => agent.reputationScore < 0.6),
     },
   };
 }
@@ -191,6 +249,47 @@ app.post('/agents/:agentId/heartbeat', (req, res) => {
   }
   recalculateAgentState(agent);
   res.json(agent);
+});
+
+app.post('/scores/agents/:agentId', (req, res) => {
+  const agent = agents.find((entry) => entry.id === req.params.agentId);
+  if (!agent) {
+    return res.status(404).json({ error: 'Agent not found' });
+  }
+
+  if (req.body.reputationScore !== undefined) {
+    agent.reputationScore = clampScore(req.body.reputationScore, agent.reputationScore);
+  }
+  if (req.body.reliability !== undefined) {
+    agent.reliability = clampScore(req.body.reliability, agent.reliability);
+  }
+  if (req.body.responsiveness !== undefined) {
+    agent.responsiveness = clampScore(req.body.responsiveness, agent.responsiveness);
+  }
+  if (req.body.governanceIntegrity !== undefined) {
+    agent.governanceIntegrity = clampScore(req.body.governanceIntegrity, agent.governanceIntegrity);
+  }
+
+  agent.reputationTier = deriveReputationTier(agent.reputationScore);
+  res.json(agent);
+});
+
+app.get('/scores/agents/:agentId', (req, res) => {
+  const agent = agents.find((entry) => entry.id === req.params.agentId);
+  if (!agent) {
+    return res.status(404).json({ error: 'Agent not found' });
+  }
+
+  res.json({
+    id: agent.id,
+    name: agent.name,
+    reputationScore: agent.reputationScore,
+    reputationTier: agent.reputationTier,
+    reliability: agent.reliability,
+    responsiveness: agent.responsiveness,
+    governanceIntegrity: agent.governanceIntegrity,
+    routingWeight: Number(computeReputationComponent(agent).toFixed(3)),
+  });
 });
 
 app.post('/tasks', (req, res) => {
@@ -241,6 +340,7 @@ app.post('/routing/assign', (req, res) => {
     task,
     selectedAgent: best.agent,
     fitScore: Number(best.fit.toFixed(3)),
+    reputationComponent: Number(best.reputationComponent.toFixed(3)),
   });
 });
 
