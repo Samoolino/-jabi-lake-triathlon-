@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Agent",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "role": { "type": "string" },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "state": { "type": "string", "enum": ["idle","assigned","active","blocked","completed"] }
+  },
+  "required": ["id","name","role"]
+}
