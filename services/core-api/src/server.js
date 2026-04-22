@@ -67,6 +67,7 @@ function normalizeTask(payload = {}) {
     validationRequired: Boolean(payload.validationRequired),
     validationTaskId: payload.validationTaskId || null,
     taskType: payload.taskType || 'standard',
+    cascadeBlockedBy: payload.cascadeBlockedBy || null,
     createdAt: payload.createdAt || nowIso(),
     updatedAt: payload.updatedAt || nowIso(),
   };
@@ -95,6 +96,12 @@ function getTaskById(taskId) {
 function getOpenTasksForAgent(agentId) {
   return tasks.filter(
     (task) => task.assignedAgent === agentId && !['completed', 'failed'].includes(task.state)
+  );
+}
+
+function getDependentTasks(taskId) {
+  return tasks.filter(
+    (task) => task.dependencyTaskIds.includes(taskId) || task.parentTaskId === taskId || task.childTaskIds.includes(taskId)
   );
 }
 
@@ -174,11 +181,27 @@ function dependenciesResolved(task) {
   });
 }
 
+function hasFailedDependency(task) {
+  if (!task.dependencyTaskIds.length) return false;
+  return task.dependencyTaskIds.some((dependencyId) => {
+    const dependencyTask = getTaskById(dependencyId);
+    return dependencyTask && ['failed', 'blocked'].includes(dependencyTask.state);
+  });
+}
+
 function allChildTasksCompleted(parentTask) {
   if (!parentTask.childTaskIds.length) return true;
   return parentTask.childTaskIds.every((childTaskId) => {
     const childTask = getTaskById(childTaskId);
     return childTask && childTask.state === 'completed';
+  });
+}
+
+function anyChildTaskFailed(parentTask) {
+  if (!parentTask.childTaskIds.length) return false;
+  return parentTask.childTaskIds.some((childTaskId) => {
+    const childTask = getTaskById(childTaskId);
+    return childTask && ['failed', 'blocked'].includes(childTask.state);
   });
 }
 
@@ -235,10 +258,32 @@ function applyTaskScoreToAgent(agent, taskScore) {
   agent.scoringHistory = agent.scoringHistory.slice(-10);
 }
 
+function cascadeBlockFrom(taskId, reasonTaskId = taskId, visited = new Set()) {
+  if (visited.has(taskId)) return;
+  visited.add(taskId);
+
+  const dependents = getDependentTasks(taskId);
+  dependents.forEach((dependentTask) => {
+    if (!['completed', 'failed'].includes(dependentTask.state)) {
+      dependentTask.state = 'blocked';
+      dependentTask.cascadeBlockedBy = reasonTaskId;
+      dependentTask.updatedAt = nowIso();
+      cascadeBlockFrom(dependentTask.id, reasonTaskId, visited);
+    }
+  });
+}
+
 function updateParentTaskState(task) {
   if (!task.parentTaskId) return;
   const parentTask = getTaskById(task.parentTaskId);
   if (!parentTask) return;
+
+  if (anyChildTaskFailed(parentTask)) {
+    parentTask.state = 'blocked';
+    parentTask.cascadeBlockedBy = task.id;
+    parentTask.updatedAt = nowIso();
+    return;
+  }
 
   if (allChildTasksCompleted(parentTask)) {
     if (parentTask.validationTaskId) {
@@ -262,6 +307,19 @@ function updateParentTaskState(task) {
     parentTask.progress = 0.5;
     parentTask.updatedAt = nowIso();
   }
+}
+
+function buildDependencyGraph() {
+  return tasks.map((task) => ({
+    id: task.id,
+    state: task.state,
+    taskType: task.taskType,
+    parentTaskId: task.parentTaskId,
+    childTaskIds: task.childTaskIds,
+    dependencyTaskIds: task.dependencyTaskIds,
+    validationTaskId: task.validationTaskId,
+    cascadeBlockedBy: task.cascadeBlockedBy,
+  }));
 }
 
 function updateTarkwaMode() {
@@ -306,6 +364,7 @@ function buildAwareness() {
       openTasks: tasks.filter((task) => !['completed', 'failed'].includes(task.state)).length,
       blockedTasks: tasks.filter((task) => task.state === 'blocked').length,
       waitingTasks: tasks.filter((task) => task.state === 'waiting').length,
+      cascadeBlockedTasks: tasks.filter((task) => task.cascadeBlockedBy).length,
       completedTasks: tasks.filter((task) => task.state === 'completed').length,
     },
     agentStates: {
@@ -326,6 +385,10 @@ function buildAwareness() {
     routingPreference: {
       trustedAgents: rankedAgents.slice(0, 3),
       degradedAgents: rankedAgents.filter((agent) => agent.reputationScore < 0.6),
+    },
+    dependencyGraphSummary: {
+      nodes: tasks.length,
+      cascades: tasks.filter((task) => task.cascadeBlockedBy).map((task) => ({ id: task.id, blockedBy: task.cascadeBlockedBy })),
     },
   };
 }
@@ -425,6 +488,25 @@ app.get('/tasks', (req, res) => {
   res.json(tasks);
 });
 
+app.get('/routing/dependency-graph', (req, res) => {
+  res.json({ nodes: buildDependencyGraph() });
+});
+
+app.post('/routing/mark-failed', (req, res) => {
+  const task = getTaskById(req.body.taskId);
+  if (!task) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  task.state = 'failed';
+  task.updatedAt = nowIso();
+  task.cascadeBlockedBy = task.id;
+  cascadeBlockFrom(task.id, task.id);
+  updateTarkwaMode();
+
+  return res.json({ task, cascaded: buildDependencyGraph().filter((node) => node.cascadeBlockedBy === task.id) });
+});
+
 app.post('/routing/assign', (req, res) => {
   const task = tasks.find((entry) => entry.id === req.body.taskId);
   if (!task) {
@@ -447,6 +529,7 @@ app.post('/routing/assign', (req, res) => {
   task.assignedAgent = best.agent.id;
   task.state = 'assigned';
   task.updatedAt = nowIso();
+  task.cascadeBlockedBy = null;
 
   syncAgentWorkloads();
   updateTarkwaMode();
@@ -529,7 +612,18 @@ setInterval(() => {
       return;
     }
 
-    if ((task.taskType === 'child' || task.taskType === 'validation') && !task.assignedAgent && ['created', 'blocked'].includes(task.state)) {
+    if (hasFailedDependency(task)) {
+      const failedDependency = task.dependencyTaskIds.find((dependencyId) => {
+        const dependencyTask = getTaskById(dependencyId);
+        return dependencyTask && ['failed', 'blocked'].includes(dependencyTask.state);
+      });
+      task.state = 'blocked';
+      task.cascadeBlockedBy = failedDependency || task.cascadeBlockedBy;
+      task.updatedAt = nowIso();
+      return;
+    }
+
+    if ((task.taskType === 'child' || task.taskType === 'validation') && !task.assignedAgent && ['created', 'blocked'].includes(task.state) && !task.cascadeBlockedBy) {
       const best = pickBestAgent(task);
       if (best) {
         task.assignedAgent = best.agent.id;
@@ -538,7 +632,7 @@ setInterval(() => {
       }
     }
 
-    if (task.state === 'waiting' && dependenciesResolved(task)) {
+    if (task.state === 'waiting' && dependenciesResolved(task) && !task.cascadeBlockedBy) {
       if (task.taskType !== 'standard' || !task.childTaskIds.length) {
         task.state = 'assigned';
         task.updatedAt = nowIso();
@@ -561,7 +655,9 @@ setInterval(() => {
       const assignedAgent = agents.find((agent) => agent.id === task.assignedAgent);
       if (!assignedAgent || assignedAgent.health === 'red') {
         task.state = 'blocked';
+        task.cascadeBlockedBy = task.id;
         task.updatedAt = nowIso();
+        cascadeBlockFrom(task.id, task.id);
         return;
       }
 
@@ -574,6 +670,7 @@ setInterval(() => {
       task.state = 'completed';
       task.progress = 1;
       task.updatedAt = nowIso();
+      task.cascadeBlockedBy = null;
       task.taskScore = computeTaskScore(task, assignedAgent);
       applyTaskScoreToAgent(assignedAgent, task.taskScore);
       updateParentTaskState(task);
