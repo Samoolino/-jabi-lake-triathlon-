@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jabi Lake Ops Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 20px; background: #111827; border-bottom: 1px solid #334155; }
+    h1 { margin: 0; font-size: 24px; }
+    .sub { margin-top: 6px; color: #94a3b8; }
+    .wrap { padding: 20px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 16px; }
+    .card h2 { margin: 0 0 12px; font-size: 18px; }
+    pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; color: #cbd5e1; }
+    .controls { padding: 0 20px 20px; }
+    input { padding: 10px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; width: 320px; }
+    button { padding: 10px 14px; margin-left: 8px; border: 0; border-radius: 8px; background: #2563eb; color: white; cursor: pointer; }
+    .full { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Jabi Lake AI Workforce Ops Dashboard</h1>
+    <div class="sub">Awareness, agents, tasks, dependency graph, and Tarkwa runtime visibility</div>
+  </header>
+
+  <div class="controls">
+    <input id="apiBase" value="http://localhost:3000" />
+    <button onclick="loadAll()">Refresh Dashboard</button>
+  </div>
+
+  <main class="wrap">
+    <section class="card"><h2>Tarkwa Awareness</h2><pre id="awareness">Loading...</pre></section>
+    <section class="card"><h2>Agents</h2><pre id="agents">Loading...</pre></section>
+    <section class="card"><h2>Tasks</h2><pre id="tasks">Loading...</pre></section>
+    <section class="card"><h2>Dependency Graph</h2><pre id="graph">Loading...</pre></section>
+    <section class="card full"><h2>Quick Notes</h2><pre>
+This is the first ops dashboard skeleton.
+
+Planned next upgrades:
+- cards and charts for system health
+- workflow graph visualization
+- live polling and auto refresh
+- task creation and failure simulation controls
+- agent score leaderboard
+    </pre></section>
+  </main>
+
+  <script>
+    function apiBase() {
+      return document.getElementById('apiBase').value.replace(/\/$/, '');
+    }
+
+    async function fetchJson(path, targetId) {
+      const target = document.getElementById(targetId);
+      try {
+        const response = await fetch(`${apiBase()}${path}`);
+        const data = await response.json();
+        target.textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        target.textContent = `Failed to load ${path}: ${error.message}`;
+      }
+    }
+
+    async function loadAll() {
+      await Promise.all([
+        fetchJson('/tarkwa/awareness', 'awareness'),
+        fetchJson('/agents', 'agents'),
+        fetchJson('/tasks', 'tasks'),
+        fetchJson('/routing/dependency-graph', 'graph')
+      ]);
+    }
+
+    loadAll();
+  </script>
+</body>
+</html>
